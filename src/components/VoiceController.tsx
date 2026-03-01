@@ -364,7 +364,14 @@ function VoiceController({
 
       setStatus("Zubi is saying goodbye...");
       addMessage("zubi", closing);
-      await speakTurn(closing, deadline).catch(() => undefined);
+      stopActiveSttCapture();
+      setIsListening(false);
+      await speakText(closing, {
+        rate: 0.98,
+        pitch: 1.0,
+        volume: 1,
+        languageCode: agentLanguage,
+      }).catch(() => undefined);
 
       transitionTo("END");
       setStatus("Conversation complete.");
