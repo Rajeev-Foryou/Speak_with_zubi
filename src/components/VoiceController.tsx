@@ -8,6 +8,7 @@ import {
   isLlmConfigured,
 } from "../utils/llm";
 import {
+  endVoiceSession,
   ensureMicrophoneAccess,
   ensureSpeechOutputActivation,
   getMissingSttEnvVars,
@@ -16,6 +17,9 @@ import {
   listenForChildResponse,
   listenForChildResponseWhisper,
   speakText,
+  startVoiceSession,
+  stopActiveSttCapture,
+  waitForSpeechIdle,
 } from "../utils/speech";
 
 const MAX_TURNS = 10;
@@ -213,6 +217,7 @@ function VoiceController({
 
   useEffect(() => {
     stopRef.current = false;
+    startVoiceSession(agentLanguage);
 
     const addMessage = (speaker: "zubi" | "child", text: string) => {
       if (!text) return;
@@ -228,6 +233,9 @@ function VoiceController({
       if (remainingMs(deadline) <= 0) {
         throw new Error("global-timeout");
       }
+
+      stopActiveSttCapture();
+      setIsListening(false);
 
       await speakText(text, {
         rate: 0.98,
@@ -245,6 +253,11 @@ function VoiceController({
       const available = remainingMs(deadline);
       if (available < 1200) {
         return { transcript: "", isSilent: true, error: "global-timeout" };
+      }
+
+      await waitForSpeechIdle();
+      if (stopRef.current) {
+        return { transcript: "", isSilent: true, error: "stopped" };
       }
 
       const cappedListen = Math.min(listenMs, available);
@@ -525,6 +538,8 @@ function VoiceController({
 
     return () => {
       stopRef.current = true;
+      stopActiveSttCapture();
+      endVoiceSession();
       stateRef.current = "END";
       setTurnState("END");
       setIsListening(false);

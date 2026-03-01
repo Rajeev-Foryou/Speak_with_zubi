@@ -1,4 +1,10 @@
-import { PollyClient, SynthesizeSpeechCommand } from "@aws-sdk/client-polly";
+import {
+  PollyClient,
+  SynthesizeSpeechCommand,
+  type OutputFormat,
+} from "@aws-sdk/client-polly";
+
+type VoiceId = "Aditi";
 
 const REGION = (import.meta.env.VITE_AWS_REGION as string) || "ap-south-1";
 const ACCESS_KEY = import.meta.env.VITE_AWS_ACCESS_KEY_ID as string;
@@ -16,8 +22,6 @@ const polly = new PollyClient({
 let lastPlayPromise: Promise<void> = Promise.resolve();
 let activeAudio: HTMLAudioElement | null = null;
 
-const FALLBACK_VOICES = ["Joanna", "Aditi"];
-const SUPPORTED_VOICES = new Set(FALLBACK_VOICES);
 const LEADING_SILENCE_MS = 180;
 const DEBUG_VOICE_LOGS = import.meta.env.DEV && import.meta.env.VITE_DEBUG_VOICE === "true";
 
@@ -56,6 +60,12 @@ function toMergedBytes(chunks: Uint8Array[]): Uint8Array {
   return merged;
 }
 
+function toBlobBuffer(bytes: Uint8Array): ArrayBuffer {
+  const clone = new Uint8Array(bytes.byteLength);
+  clone.set(bytes);
+  return clone.buffer;
+}
+
 async function streamToBlob(stream: unknown, mime = "audio/mpeg") {
   if (!stream) throw new Error("Polly returned empty audio stream");
 
@@ -85,7 +95,7 @@ async function streamToBlob(stream: unknown, mime = "audio/mpeg") {
     }
 
     const merged = toMergedBytes(chunks);
-    return new Blob([merged], { type: mime });
+    return new Blob([toBlobBuffer(merged)], { type: mime });
   }
 
   if (typeof (stream as AsyncIterable<Uint8Array>)?.[Symbol.asyncIterator] === "function") {
@@ -97,12 +107,12 @@ async function streamToBlob(stream: unknown, mime = "audio/mpeg") {
     }
 
     const merged = toMergedBytes(chunks);
-    return new Blob([merged], { type: mime });
+    return new Blob([toBlobBuffer(merged)], { type: mime });
   }
 
   if (stream instanceof Uint8Array) {
     if (!stream.length) throw new Error("Polly returned empty audio data");
-    return new Blob([stream], { type: mime });
+    return new Blob([toBlobBuffer(stream)], { type: mime });
   }
 
   if (stream instanceof ArrayBuffer) {
@@ -123,35 +133,29 @@ function inferLanguageKey(input?: string): "en" | "hi" {
   return normalized.startsWith("hi") ? "hi" : "en";
 }
 
-function resolveVoiceId(options: { voiceId?: string; languageCode?: string } = {}) {
-  const languageKey = inferLanguageKey(options.languageCode);
-  const voiceByLanguage: Record<"en" | "hi", string> = {
-    en: "Joanna",
-    hi: "Aditi",
-  };
-
-  const mappedVoice = voiceByLanguage[languageKey] ?? "Joanna";
-  const requestedVoice = (options.voiceId || mappedVoice || "").trim();
-  return SUPPORTED_VOICES.has(requestedVoice) ? requestedVoice : mappedVoice;
+function resolveVoiceId(
+  options: { voiceId?: VoiceId; languageCode?: string } = {},
+): VoiceId {
+  const requestedVoice = (options.voiceId || "Aditi").trim();
+  if (requestedVoice === "Aditi") {
+    return "Aditi";
+  }
+  return "Aditi";
 }
 
-function buildSynthesisConfig(voiceId: string, outputFormat?: string) {
-  if (voiceId === "Aditi") {
-    return {
-      voiceId,
-      languageCode: "hi-IN" as const,
-      outputFormat: outputFormat || "mp3",
-      sampleRate: "22050",
-      engine: undefined,
-    };
-  }
-
+function buildSynthesisConfig(
+  voiceId: VoiceId,
+  languageCodeHint?: string,
+  outputFormat?: OutputFormat,
+) {
+  const languageKey = inferLanguageKey(languageCodeHint);
+  const languageCode: "en-IN" | "hi-IN" = languageKey === "hi" ? "hi-IN" : "en-IN";
   return {
-    voiceId: "Joanna",
-    languageCode: "en-US" as const,
+    voiceId,
+    languageCode,
     outputFormat: outputFormat || "mp3",
-    sampleRate: "24000",
-    engine: "neural" as const,
+    sampleRate: "22050",
+    engine: undefined,
   };
 }
 
@@ -245,8 +249,8 @@ async function playBufferedBlob(blob: Blob): Promise<void> {
 export async function speakWithPolly(
   text: string,
   opts?: {
-    voiceId?: string;
-    outputFormat?: string;
+    voiceId?: VoiceId;
+    outputFormat?: OutputFormat;
     languageCode?: "en" | "hi" | "en-US" | "hi-IN" | "en-IN";
   },
 ) {
@@ -259,12 +263,13 @@ export async function speakWithPolly(
 
   const safeRequestedVoice = resolveVoiceId(opts);
 
-  const synthesis = buildSynthesisConfig(safeRequestedVoice, opts?.outputFormat);
+  const synthesis = buildSynthesisConfig(
+    safeRequestedVoice,
+    opts?.languageCode,
+    opts?.outputFormat,
+  );
   const bufferedSsml = buildBufferedSsml(normalizedText);
-  const voicesToTry = [
-    synthesis.voiceId,
-    ...FALLBACK_VOICES.filter((v) => v !== safeRequestedVoice),
-  ];
+  const lockedVoiceId = synthesis.voiceId as VoiceId;
 
   debugVoice("[Polly] speakWithPolly enter", {
     text: normalizedText,
@@ -274,31 +279,22 @@ export async function speakWithPolly(
   });
 
   let res: any = null;
-  let lastError: unknown = null;
-  for (const voiceId of voicesToTry) {
-    try {
-      const command = new SynthesizeSpeechCommand({
-        Text: bufferedSsml,
-        VoiceId: voiceId,
-        LanguageCode: voiceId === "Aditi" ? "hi-IN" : "en-US",
-        OutputFormat: synthesis.outputFormat,
-        SampleRate: voiceId === "Aditi" ? "22050" : synthesis.sampleRate,
-        ...(voiceId === "Joanna" ? { Engine: "neural" as const } : {}),
-        TextType: "ssml",
-      });
-      res = await polly.send(command);
-      break;
-    } catch (error) {
-      lastError = error;
-      debugVoice("[Polly] SynthesizeSpeech failed for voice", {
-        voiceId,
-        error,
-      });
-    }
-  }
-
-  if (!res) {
-    throw lastError || new Error("Polly synthesis failed");
+  try {
+    const command = new SynthesizeSpeechCommand({
+      Text: bufferedSsml,
+      VoiceId: lockedVoiceId,
+      LanguageCode: synthesis.languageCode,
+      OutputFormat: synthesis.outputFormat as OutputFormat,
+      SampleRate: synthesis.sampleRate,
+      TextType: "ssml",
+    });
+    res = await polly.send(command);
+  } catch (error) {
+    debugVoice("[Polly] SynthesizeSpeech failed for locked voice", {
+      voiceId: lockedVoiceId,
+      error,
+    });
+    throw error;
   }
 
   const audioStream = (res as any).AudioStream;

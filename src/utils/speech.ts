@@ -1,4 +1,5 @@
 import speakWithPolly from "./pollyTTS";
+import { voiceRuntime } from "./voiceRuntime";
 
 let isFirstUtterance = true;
 const SpeechRecognitionCtor =
@@ -21,7 +22,7 @@ const MIN_AUDIO_BLOB_BYTES = 1400;
 
 let sttLastRequestAt = 0;
 let sttCooldownUntil = 0;
-let currentSpeechPromise: Promise<void> = Promise.resolve();
+let activeRecognition: SpeechRecognitionLike | null = null;
 
 let speechActivationPromise: Promise<{ activated: true }> | null = null;
 
@@ -297,36 +298,51 @@ export async function speakText(
 ): Promise<void> {
   const runSpeech = async (): Promise<void> => {
     const normalizedText = (text || "").trim();
-    const rawHint = (options?.voiceNameHint || "").trim().toLowerCase();
     const rawLanguage = (options?.languageCode || "").toLowerCase();
 
     if (!normalizedText) {
       return;
     }
 
-    const languageKey: "en" | "hi" =
-      rawLanguage.startsWith("hi") || rawHint === "hi" || rawHint === "hindi"
-        ? "hi"
-        : "en";
+    const sessionVoice = voiceRuntime.getVoiceConfig(
+      rawLanguage.startsWith("hi") ? "hi-IN" : "en-IN",
+    );
 
-    const VOICE_BY_LANGUAGE: Record<"en" | "hi", string> = {
-      en: "Joanna",
-      hi: "Aditi",
-    };
-
-    const voiceId = VOICE_BY_LANGUAGE[languageKey] ?? "Joanna";
-    const languageCode = languageKey === "hi" ? "hi-IN" : "en-US";
+    stopActiveSttCapture();
 
     try {
-      await speakWithPolly(normalizedText, { voiceId, languageCode });
+      await speakWithPolly(normalizedText, {
+        voiceId: sessionVoice.voiceId,
+        languageCode: sessionVoice.languageCode,
+      });
     } catch {
       throw new Error("tts-playback-failed");
     }
   };
 
-  const queuedSpeech = currentSpeechPromise.then(runSpeech, runSpeech);
-  currentSpeechPromise = queuedSpeech.catch(() => undefined);
+  const queuedSpeech = voiceRuntime.enqueueSpeech(runSpeech);
   await queuedSpeech;
+}
+
+export function startVoiceSession(languageCode: "en-IN" | "hi-IN"): void {
+  voiceRuntime.beginSession(languageCode);
+}
+
+export function endVoiceSession(): void {
+  voiceRuntime.endSession();
+}
+
+export function waitForSpeechIdle(): Promise<void> {
+  return voiceRuntime.waitForSpeechIdle();
+}
+
+export function stopActiveSttCapture(): void {
+  if (!activeRecognition) return;
+  try {
+    activeRecognition.stop();
+  } catch {
+    // ignore stop errors from already-stopped recognition
+  }
 }
 
 export function listenOnce({
@@ -354,6 +370,7 @@ export function listenOnce({
     }
 
     const recognition = new SpeechRecognitionCtor();
+    activeRecognition = recognition;
     recognition.lang = lang;
     recognition.continuous = false;
     recognition.interimResults = interimResults;
@@ -434,6 +451,9 @@ export function listenOnce({
     };
 
     recognition.onend = () => {
+      if (activeRecognition === recognition) {
+        activeRecognition = null;
+      }
       recognitionEnded = true;
 
       if (finished && pendingPayload) {
