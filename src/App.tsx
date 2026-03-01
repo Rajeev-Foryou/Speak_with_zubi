@@ -39,6 +39,11 @@ function App() {
     setVoiceView(INITIAL_VIEW_STATE);
   };
 
+  const handleLanguageChange = (language: AgentLanguage) => {
+    if (isRunning) return;
+    setAgentLanguage(language);
+  };
+
   const feedbackText = sessionState === "finished"
     ? "Great job! 🌟"
     : voiceView.isListening
@@ -67,7 +72,7 @@ function App() {
         secondsLeft={voiceView.secondsLeft}
         onStartTest={handleStartTest}
         onEndTest={handleEndTest}
-        onLanguageChange={setAgentLanguage}
+        onLanguageChange={handleLanguageChange}
       />
 
       {isRunning ? (
