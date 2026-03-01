@@ -1,0 +1,23 @@
+:root {
+  font-family:
+    "Comic Sans MS",
+    "Trebuchet MS",
+    system-ui,
+    -apple-system,
+    sans-serif;
+  line-height: 1.5;
+  color: #1f2937;
+  background: #f7fafc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+button {
+  font: inherit;
+}
